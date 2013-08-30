@@ -28,7 +28,7 @@ let build_sockaddr addr port =
     (* should this be lwt hent = Lwt_lib.gethostbyname addr ? *)
     let hent = Unix.gethostbyname addr in
     return (Unix.ADDR_INET (hent.Unix.h_addr_list.(0), port))
-  with _ -> 
+  with _ ->
     raise_lwt (Failure ("cant resolve hostname: " ^ addr))
 
 (* Vanilla TCP connection *)
@@ -80,20 +80,37 @@ module Tcp_server = struct
   let process_accept ~sockaddr ~timeout callback (client,_) =
     let ic = Lwt_io.of_fd Lwt_io.input client in
     let oc = Lwt_io.of_fd Lwt_io.output client in
- 
+
     let c = callback ic oc in
     let events = match timeout with
       |None -> [c]
       |Some t -> [c; (Lwt_unix.sleep (float_of_int t)) ] in
-    let _ = Lwt.pick events >>= fun () -> close (ic,oc) in
-    return ()
-  
-  let init ~sockaddr ~timeout callback =
+    Lwt.pick events >>= fun () -> close (ic,oc)
+
+
+  let init ?max_connections ~sockaddr ~timeout callback =
     let s = init_socket sockaddr in
-    while_lwt true do
-      Lwt_unix.accept s >>=
-      process_accept ~sockaddr ~timeout callback
-    done
+
+    match max_connections with
+    | None ->
+      while_lwt true do
+        Lwt_unix.accept s
+        >>= (fun c -> let _ = process_accept ~sockaddr ~timeout callback c in return ())
+      done
+
+    | Some max_connections ->
+      let pool = Lwt_pool.create max_connections return in
+      for_lwt i = 1 to max_connections do
+        Lwt_pool.use
+          pool
+          (fun () ->
+             while_lwt true do
+             Lwt_unix.accept s
+             >>= process_accept  ~sockaddr ~timeout callback
+             done)
+      done
+
+
 end
 
 let connect_uri uri =
