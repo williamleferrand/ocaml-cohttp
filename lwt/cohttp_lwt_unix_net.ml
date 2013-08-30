@@ -99,16 +99,16 @@ module Tcp_server = struct
       done
 
     | Some max_connections ->
-      let pool = Lwt_pool.create max_connections return in
-      for_lwt i = 1 to max_connections do
-        Lwt_pool.use
-          pool
-          (fun () ->
-             while_lwt true do
+      let rec aux =
+        function
+        | 0 -> []
+        | n ->
+          (while_lwt true do
              Lwt_unix.accept s
-             >>= process_accept  ~sockaddr ~timeout callback
-             done)
-      done
+             >>= process_accept ~sockaddr ~timeout callback
+           done) :: aux (n-1)
+      in
+      Lwt.join (aux max_connections)
 
 
 end
