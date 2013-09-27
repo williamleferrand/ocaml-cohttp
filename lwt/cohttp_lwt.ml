@@ -109,8 +109,13 @@ module Make_client
     (Net:Net with module IO = IO) = struct
 
   module IO = IO
+
+  module Transfer_IO = Transfer_io.Make(IO)
+
   module Request = Request
   module Response = Response
+
+  let chunk_size = 8192
 
   let read_response ?closefn ic oc =
     match_lwt Response.read ic with
@@ -120,7 +125,34 @@ module Make_client
     |Some res -> begin
         match Response.has_body res with
         |true ->
-          let stream = Cohttp_lwt_body.create_stream (Response.read_body_chunk res) ic in
+          let stream =
+            match Response.encoding res with
+            | Transfer.Fixed len ->
+              (* in case of fixed size we'll split the stream into something that we can
+                 nicely handle on the other end *)
+              Cohttp_lwt_body.create_stream
+                (let rem = ref len in
+                 fun ic ->
+                   if !rem = 0 then
+                     return Transfer.Done
+                   else
+                   if !rem > chunk_size then
+                     (rem := !rem - chunk_size;
+                      IO.read_exactly ic chunk_size
+                      >>= (function
+                          | Some buf -> return (Transfer.Chunk buf)
+                          | None -> return (Transfer.Final_chunk "")))
+                   else
+                     (IO.read_exactly ic !rem
+                      >>= (function
+                          | Some buf -> rem := 0; return (Transfer.Final_chunk buf)
+                          | None -> rem := 0; return (Transfer.Final_chunk ""))))
+                ic
+
+
+            | _ ->
+              Cohttp_lwt_body.create_stream (Response.read_body_chunk res) ic
+          in
           (match closefn with
            |Some fn ->
              Lwt_stream.on_terminate stream fn;
